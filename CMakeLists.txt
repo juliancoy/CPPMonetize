@@ -33,6 +33,23 @@ target_link_libraries(cppmonetize
 
 target_compile_features(cppmonetize PUBLIC cxx_std_20)
 
+set(CPPMONETIZE_DEFAULT_SUPABASE_URL "" CACHE STRING
+    "Optional built-in Supabase URL fallback for desktop auth (public client config).")
+set(CPPMONETIZE_DEFAULT_SUPABASE_ANON_KEY "" CACHE STRING
+    "Optional built-in Supabase anon key fallback for desktop auth (public client config).")
+
+if(CPPMONETIZE_DEFAULT_SUPABASE_URL)
+    set(_cpmon_url_escaped "\"${CPPMONETIZE_DEFAULT_SUPABASE_URL}\"")
+    target_compile_definitions(cppmonetize PRIVATE
+        "CPPMONETIZE_DEFAULT_SUPABASE_URL=${_cpmon_url_escaped}")
+endif()
+
+if(CPPMONETIZE_DEFAULT_SUPABASE_ANON_KEY)
+    set(_cpmon_anon_escaped "\"${CPPMONETIZE_DEFAULT_SUPABASE_ANON_KEY}\"")
+    target_compile_definitions(cppmonetize PRIVATE
+        "CPPMONETIZE_DEFAULT_SUPABASE_ANON_KEY=${_cpmon_anon_escaped}")
+endif()
+
 include(GNUInstallDirs)
 install(TARGETS cppmonetize
     EXPORT CPPMonetizeTargets
@@ -55,4 +72,10 @@ if(BUILD_TESTING)
     )
     target_link_libraries(cppmonetize_tests PRIVATE cppmonetize Qt6::Test)
     add_test(NAME cppmonetize_tests COMMAND cppmonetize_tests)
+
+    add_executable(cppmonetize_oauth_tests
+        tests/test_oauth_desktop_flow.cpp
+    )
+    target_link_libraries(cppmonetize_oauth_tests PRIVATE cppmonetize Qt6::Test)
+    add_test(NAME cppmonetize_oauth_tests COMMAND cppmonetize_oauth_tests)
 endif()

@@ -3,6 +3,10 @@
 #include <QDesktopServices>
 #include <QEventLoop>
 #include <QCryptographicHash>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -12,6 +16,7 @@
 #include <QRegularExpression>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTextStream>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
@@ -81,11 +86,89 @@ bool isSupabaseOrigin(const QString& baseUrl)
     return baseUrl.contains(QStringLiteral(".supabase.co"), Qt::CaseInsensitive);
 }
 
+QString readBuiltInSupabaseUrl()
+{
+#ifdef CPPMONETIZE_DEFAULT_SUPABASE_URL
+    return QStringLiteral(CPPMONETIZE_DEFAULT_SUPABASE_URL).trimmed();
+#else
+    return {};
+#endif
+}
+
+QString readBuiltInSupabaseAnonKey()
+{
+#ifdef CPPMONETIZE_DEFAULT_SUPABASE_ANON_KEY
+    return QStringLiteral(CPPMONETIZE_DEFAULT_SUPABASE_ANON_KEY).trimmed();
+#else
+    return {};
+#endif
+}
+
 QString readSupabaseAnonKeyFromEnv()
 {
     QString key = qEnvironmentVariable("SUPABASE_ANON_KEY").trimmed();
     if (key.isEmpty()) {
         key = qEnvironmentVariable("SB_ANON_KEY").trimmed();
+    }
+    if (!key.isEmpty()) {
+        return key;
+    }
+
+    auto parseEnvFile = [](const QString& path) -> QString {
+        QFile file(path);
+        if (!file.exists() || !file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return {};
+        }
+        QTextStream stream(&file);
+        while (!stream.atEnd()) {
+            QString line = stream.readLine().trimmed();
+            if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
+                continue;
+            }
+            if (line.startsWith(QStringLiteral("export "))) {
+                line = line.mid(7).trimmed();
+            }
+            const int eq = line.indexOf(QLatin1Char('='));
+            if (eq <= 0) {
+                continue;
+            }
+            const QString name = line.left(eq).trimmed();
+            QString value = line.mid(eq + 1).trimmed();
+            if (name != QStringLiteral("SUPABASE_ANON_KEY") &&
+                name != QStringLiteral("SB_ANON_KEY")) {
+                continue;
+            }
+            if ((value.startsWith(QLatin1Char('"')) && value.endsWith(QLatin1Char('"'))) ||
+                (value.startsWith(QLatin1Char('\'')) && value.endsWith(QLatin1Char('\'')))) {
+                value = value.mid(1, value.size() - 2);
+            }
+            return value.trimmed();
+        }
+        return {};
+    };
+
+    QStringList candidates;
+    const QString cwd = QDir::currentPath();
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (!cwd.isEmpty()) {
+        candidates.push_back(QDir(cwd).filePath(QStringLiteral(".env.supabase")));
+        candidates.push_back(QDir(cwd).filePath(QStringLiteral("../.env.supabase")));
+        candidates.push_back(QDir(cwd).filePath(QStringLiteral("../../.env.supabase")));
+    }
+    if (!appDir.isEmpty()) {
+        candidates.push_back(QDir(appDir).filePath(QStringLiteral(".env.supabase")));
+        candidates.push_back(QDir(appDir).filePath(QStringLiteral("../.env.supabase")));
+        candidates.push_back(QDir(appDir).filePath(QStringLiteral("../../.env.supabase")));
+    }
+    candidates.removeDuplicates();
+    for (const QString& candidate : candidates) {
+        const QString resolved = parseEnvFile(QFileInfo(candidate).absoluteFilePath());
+        if (!resolved.isEmpty()) {
+            return resolved;
+        }
+    }
+    if (key.isEmpty()) {
+        key = readBuiltInSupabaseAnonKey();
     }
     return key;
 }
@@ -208,61 +291,35 @@ Result<OAuthCallbackResult> exchangeSupabasePkceCode(const OAuthConfig& config,
 
 Result<OAuthConfig> OAuthDesktopFlow::resolveSupabaseConfig(const QString& apiBaseUrl, int timeoutMs) const
 {
-    const QString normalizedBase = normalizeBaseUrl(apiBaseUrl);
+    Q_UNUSED(timeoutMs);
+
+    QString normalizedBase = normalizeBaseUrl(apiBaseUrl);
+    if (normalizedBase.isEmpty()) {
+        normalizedBase = normalizeBaseUrl(readBuiltInSupabaseUrl());
+    }
     if (normalizedBase.isEmpty()) {
         return Result<OAuthConfig>::fail(makeError(0, QStringLiteral("OAuth config base URL is empty")));
     }
 
-    if (isSupabaseOrigin(normalizedBase)) {
-        QString supabaseBase = normalizedBase;
-        if (supabaseBase.endsWith(QStringLiteral("/api"))) {
-            supabaseBase.chop(4);
-        }
-        OAuthConfig cfg;
-        cfg.enabled = true;
-        cfg.supabaseUrl = normalizeBaseUrl(supabaseBase);
-        cfg.supabaseAnonKey = readSupabaseAnonKeyFromEnv();
-        if (cfg.supabaseAnonKey.isEmpty()) {
-            return Result<OAuthConfig>::fail(
-                makeError(0, QStringLiteral("Missing Supabase anon key in SUPABASE_ANON_KEY or SB_ANON_KEY")));
-        }
-        return Result<OAuthConfig>::ok(cfg);
+    if (!isSupabaseOrigin(normalizedBase)) {
+        return Result<OAuthConfig>::fail(
+            makeError(0, QStringLiteral("Only Supabase origin URLs are supported for OAuth login.")));
     }
 
-    QStringList candidates;
-    candidates.push_back(normalizedBase);
-    if (normalizedBase.endsWith(QStringLiteral("/api"))) {
-        const QString withoutApi = normalizedBase.left(normalizedBase.size() - 4);
-        if (!withoutApi.isEmpty()) {
-            candidates.push_back(withoutApi);
-        }
-    } else {
-        candidates.push_back(normalizedBase + QStringLiteral("/api"));
-    }
-    candidates.removeDuplicates();
-
-    ApiError lastError = makeError(0, QStringLiteral("OAuth config not found."));
-    for (const QString& candidate : candidates) {
-        const auto cfgResult = fetchOAuthConfig(candidate, timeoutMs);
-        if (!cfgResult.hasValue()) {
-            lastError = cfgResult.error();
-            continue;
-        }
-        OAuthConfig cfg = cfgResult.value();
-        if (!cfg.enabled || cfg.supabaseUrl.trimmed().isEmpty()) {
-            continue;
-        }
-        if (cfg.supabaseAnonKey.trimmed().isEmpty()) {
-            cfg.supabaseAnonKey = readSupabaseAnonKeyFromEnv();
-        }
-        if (cfg.supabaseAnonKey.trimmed().isEmpty()) {
-            return Result<OAuthConfig>::fail(
-                makeError(0, QStringLiteral("Supabase OAuth config is enabled but anon key is missing")));
-        }
-        return Result<OAuthConfig>::ok(cfg);
+    QString supabaseBase = normalizedBase;
+    if (supabaseBase.endsWith(QStringLiteral("/api"))) {
+        supabaseBase.chop(4);
     }
 
-    return Result<OAuthConfig>::fail(lastError);
+    OAuthConfig cfg;
+    cfg.enabled = true;
+    cfg.supabaseUrl = normalizeBaseUrl(supabaseBase);
+    cfg.supabaseAnonKey = readSupabaseAnonKeyFromEnv();
+    if (cfg.supabaseAnonKey.isEmpty()) {
+        return Result<OAuthConfig>::fail(
+            makeError(0, QStringLiteral("Missing Supabase anon key in SUPABASE_ANON_KEY or SB_ANON_KEY")));
+    }
+    return Result<OAuthConfig>::ok(cfg);
 }
 
 Result<OAuthConfig> OAuthDesktopFlow::fetchOAuthConfig(const QString& apiBaseUrl, int timeoutMs) const
@@ -329,7 +386,6 @@ Result<OAuthCallbackResult> OAuthDesktopFlow::signInWithBrowserPkce(const OAuthC
     const QString resolvedProvider = provider.trimmed().isEmpty()
         ? QStringLiteral("google")
         : provider.trimmed().toLower();
-    const QString expectedState = randomPkceToken(24);
     const QString codeVerifier = randomPkceToken(48);
     const QString codeChallenge = base64UrlSha256(codeVerifier);
 
@@ -338,7 +394,6 @@ Result<OAuthCallbackResult> OAuthDesktopFlow::signInWithBrowserPkce(const OAuthC
     QUrlQuery authQuery;
     authQuery.addQueryItem(QStringLiteral("provider"), resolvedProvider);
     authQuery.addQueryItem(QStringLiteral("redirect_to"), redirectTo);
-    authQuery.addQueryItem(QStringLiteral("state"), expectedState);
     authQuery.addQueryItem(QStringLiteral("code_challenge"), codeChallenge);
     authQuery.addQueryItem(QStringLiteral("code_challenge_method"), QStringLiteral("S256"));
     authQuery.addQueryItem(QStringLiteral("flow_type"), QStringLiteral("pkce"));
@@ -383,8 +438,6 @@ Result<OAuthCallbackResult> OAuthDesktopFlow::signInWithBrowserPkce(const OAuthC
                 if (callbackError.isEmpty()) {
                     callbackError = reqError;
                 }
-            } else if (query.queryItemValue(QStringLiteral("state")).trimmed() != expectedState) {
-                callbackError = QStringLiteral("State validation failed.");
             } else {
                 const QString authCode = query.queryItemValue(QStringLiteral("code")).trimmed();
                 const auto exchangeResult = exchangeSupabasePkceCode(config, authCode, codeVerifier, timeoutMs);
@@ -397,8 +450,54 @@ Result<OAuthCallbackResult> OAuthDesktopFlow::signInWithBrowserPkce(const OAuthC
             }
 
             const QByteArray body = token.isEmpty()
-                ? QByteArray("<html><body>Sign-in did not complete. You can close this tab.</body></html>")
-                : QByteArray("<html><body>Sign-in complete. You can close this tab.</body></html>");
+                ? QByteArray(
+                      "<!doctype html><html><head><meta charset=\"utf-8\">"
+                      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                      "<title>Sign-in Status</title>"
+                      "<style>"
+                      ":root{color-scheme:light dark;}"
+                      "body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;"
+                      "background:radial-gradient(circle at 20% 0%,#2b3f68 0%,#101828 45%,#0b1220 100%);"
+                      "min-height:100vh;display:grid;place-items:center;color:#e5ecff;}"
+                      ".card{width:min(560px,92vw);background:rgba(17,24,39,.88);"
+                      "border:1px solid rgba(148,163,184,.25);border-radius:16px;padding:24px;"
+                      "box-shadow:0 18px 40px rgba(0,0,0,.35);}"
+                      ".badge{display:inline-block;padding:4px 10px;border-radius:999px;"
+                      "font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;"
+                      "background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;}"
+                      "h1{margin:14px 0 10px;font-size:22px;line-height:1.2;}"
+                      "p{margin:0;color:#cbd5e1;line-height:1.55;}"
+                      ".hint{margin-top:14px;font-size:13px;color:#94a3b8;}"
+                      "</style></head><body><main class=\"card\">"
+                      "<span class=\"badge\">Sign-in Failed</span>"
+                      "<h1>Sign-in did not complete</h1>"
+                      "<p>Return to the app and try again. This tab can be closed.</p>"
+                      "<p class=\"hint\">If this keeps happening, restart the login flow from the app.</p>"
+                      "</main></body></html>")
+                : QByteArray(
+                      "<!doctype html><html><head><meta charset=\"utf-8\">"
+                      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                      "<title>Sign-in Complete</title>"
+                      "<style>"
+                      ":root{color-scheme:light dark;}"
+                      "body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;"
+                      "background:radial-gradient(circle at 20% 0%,#24534a 0%,#0f2e31 45%,#0b1220 100%);"
+                      "min-height:100vh;display:grid;place-items:center;color:#e5ecff;}"
+                      ".card{width:min(560px,92vw);background:rgba(17,24,39,.88);"
+                      "border:1px solid rgba(148,163,184,.25);border-radius:16px;padding:24px;"
+                      "box-shadow:0 18px 40px rgba(0,0,0,.35);}"
+                      ".badge{display:inline-block;padding:4px 10px;border-radius:999px;"
+                      "font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;"
+                      "background:#14532d;color:#bbf7d0;border:1px solid #22c55e;}"
+                      "h1{margin:14px 0 10px;font-size:22px;line-height:1.2;}"
+                      "p{margin:0;color:#cbd5e1;line-height:1.55;}"
+                      ".hint{margin-top:14px;font-size:13px;color:#94a3b8;}"
+                      "</style></head><body><main class=\"card\">"
+                      "<span class=\"badge\">Success</span>"
+                      "<h1>Sign-in complete</h1>"
+                      "<p>You are now signed in. Return to the app to continue.</p>"
+                      "<p class=\"hint\">This tab can be closed.</p>"
+                      "</main></body></html>");
             QByteArray response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ";
             response += QByteArray::number(body.size());
             response += "\r\n\r\n";
