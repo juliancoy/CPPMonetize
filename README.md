@@ -10,6 +10,7 @@ Client-side only:
 - AI entitlement and usage checks
 - Checkout session initiation and paid download URL retrieval
 - Token persistence via secure store abstraction
+- Offline grace-window helper for temporary entitlement-check outages
 
 Out of scope:
 - Stripe webhook handling
@@ -23,6 +24,13 @@ cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
+
+## Operational Docs
+
+- `docs/COMPATIBILITY_MATRIX.md`
+- `docs/ROLLOUT_ROLLBACK.md`
+- `docs/SLO_ALERTS.md`
+- `scripts/compat_smoke.sh` (API smoke helper)
 
 ## Integrating in App CMake
 
@@ -65,5 +73,5 @@ For production-grade macOS/Windows secure stores, add platform adapters behind `
 
 ## Versioning
 
-- Current SDK: `0.1.0`
+- Current SDK: `1.0.0`
 - Intended contract compatibility: backend `v1.x`

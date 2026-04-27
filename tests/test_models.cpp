@@ -1,4 +1,5 @@
 #include "cppmonetize/Models.h"
+#include "cppmonetize/OfflinePolicy.h"
 
 #include <QtTest/QtTest>
 
@@ -52,6 +53,20 @@ private slots:
         QCOMPARE(parsed->contractVersion, QStringLiteral("1.2.0"));
         QCOMPARE(parsed->models.size(), 2);
         QCOMPARE(parsed->requestsPerMinute, 12);
+    }
+
+    void offlinePolicy_detectsGraceWindow()
+    {
+        QVERIFY(isWithinGraceWindow(1000, 1100, 200));
+        QVERIFY(!isWithinGraceWindow(1000, 1301, 300));
+    }
+
+    void offlinePolicy_rejectsInvalidInputs()
+    {
+        QVERIFY(!isWithinGraceWindow(0, 1000, 100));
+        QVERIFY(!isWithinGraceWindow(1000, 0, 100));
+        QVERIFY(!isWithinGraceWindow(1000, 1001, 0));
+        QVERIFY(!isWithinGraceWindow(2000, 1000, 1000));
     }
 };
 
