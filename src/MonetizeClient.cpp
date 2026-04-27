@@ -1,5 +1,6 @@
 #include "cppmonetize/MonetizeClient.h"
 
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -8,6 +9,7 @@
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QUuid>
 
 namespace cppmonetize {
 namespace {
@@ -49,12 +51,18 @@ Result<QJsonObject> performJsonRequest(const QString& method,
                                        const QUrl& url,
                                        const QJsonObject& payload,
                                        const QString& bearerToken,
-                                       int timeoutMs)
+                                       const ClientConfig& config,
+                                       const QString& operation)
 {
     QNetworkAccessManager manager;
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("X-CPPMonetize-Client", config.clientId.toUtf8());
+    const QString clientRequestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (!config.requestIdHeaderName.trimmed().isEmpty()) {
+        request.setRawHeader(config.requestIdHeaderName.toUtf8(), clientRequestId.toUtf8());
+    }
     if (!bearerToken.trimmed().isEmpty()) {
         request.setRawHeader("Authorization", ("Bearer " + bearerToken.trimmed()).toUtf8());
     }
@@ -77,7 +85,9 @@ Result<QJsonObject> performJsonRequest(const QString& method,
     });
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
 
-    timer.start(timeoutMs);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    timer.start(config.timeoutMs);
     loop.exec();
 
     const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -85,9 +95,27 @@ Result<QJsonObject> performJsonRequest(const QString& method,
     const bool timedOut = (reply->error() == QNetworkReply::OperationCanceledError && timer.isActive() == false);
     const auto parseResult = QJsonDocument::fromJson(raw);
     const QJsonObject obj = parseResult.isObject() ? parseResult.object() : QJsonObject{};
+    const qint64 durationMs = elapsed.elapsed();
+
+    auto emitTelemetry = [&](bool success, const QString& message) {
+        if (!config.telemetryHook) {
+            return;
+        }
+        RequestTelemetryEvent event;
+        event.operation = operation;
+        event.method = method;
+        event.url = url.toString();
+        event.clientRequestId = clientRequestId;
+        event.statusCode = statusCode;
+        event.durationMs = durationMs;
+        event.success = success;
+        event.message = message;
+        config.telemetryHook(event);
+    };
 
     if (timedOut) {
         reply->deleteLater();
+        emitTelemetry(false, QStringLiteral("Request timed out"));
         return Result<QJsonObject>::fail(makeError(0, QStringLiteral("Request timed out"), url.toString()));
     }
 
@@ -95,17 +123,20 @@ Result<QJsonObject> performJsonRequest(const QString& method,
         const QString parsed = parseErrorMessage(obj);
         const QString msg = !parsed.isEmpty() ? parsed : reply->errorString();
         reply->deleteLater();
+        emitTelemetry(false, msg);
         return Result<QJsonObject>::fail(makeError(statusCode, msg, QString::fromUtf8(raw)));
     }
 
     if (statusCode >= 400) {
         const QString parsed = parseErrorMessage(obj);
         reply->deleteLater();
+        emitTelemetry(false, parsed.isEmpty() ? QStringLiteral("HTTP error") : parsed);
         return Result<QJsonObject>::fail(
             makeError(statusCode, parsed.isEmpty() ? QStringLiteral("HTTP error") : parsed, QString::fromUtf8(raw)));
     }
 
     reply->deleteLater();
+    emitTelemetry(true, QStringLiteral("OK"));
     return Result<QJsonObject>::ok(obj);
 }
 
@@ -336,7 +367,8 @@ Result<bool> MonetizeClient::verifyLicenseKey(const QString& licenseKey) const
     query.addQueryItem(QStringLiteral("key"), key);
     url.setQuery(query);
 
-    const auto resp = performJsonRequest(QStringLiteral("GET"), url, QJsonObject{}, {}, config_.timeoutMs);
+    const auto resp = performJsonRequest(
+        QStringLiteral("GET"), url, QJsonObject{}, {}, config_, config_.endpoints.licenseVerifyPath);
     if (!resp.hasValue()) {
         return Result<bool>::fail(resp.error());
     }
@@ -346,7 +378,7 @@ Result<bool> MonetizeClient::verifyLicenseKey(const QString& licenseKey) const
 Result<QJsonObject> MonetizeClient::getJson(const QString& path, const QString& bearerToken) const
 {
     const QUrl url(normalizeBaseUrl() + normalizePath(path));
-    return performJsonRequest(QStringLiteral("GET"), url, QJsonObject{}, bearerToken, config_.timeoutMs);
+    return performJsonRequest(QStringLiteral("GET"), url, QJsonObject{}, bearerToken, config_, path);
 }
 
 Result<QJsonObject> MonetizeClient::postJson(const QString& path,
@@ -354,7 +386,7 @@ Result<QJsonObject> MonetizeClient::postJson(const QString& path,
                                              const QString& bearerToken) const
 {
     const QUrl url(normalizeBaseUrl() + normalizePath(path));
-    return performJsonRequest(QStringLiteral("POST"), url, payload, bearerToken, config_.timeoutMs);
+    return performJsonRequest(QStringLiteral("POST"), url, payload, bearerToken, config_, path);
 }
 
 QString MonetizeClient::normalizeBaseUrl() const

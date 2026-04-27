@@ -38,6 +38,13 @@ target_link_libraries(your_app PRIVATE CPPMonetize::cppmonetize)
 
 cppmonetize::ClientConfig cfg;
 cfg.apiBaseUrl = "https://jsynth.us/api";
+cfg.clientId = "jsynth-desktop";
+cfg.telemetryHook = [](const cppmonetize::RequestTelemetryEvent& ev) {
+    if (!ev.success) {
+        qWarning() << "[CPPMonetize]" << ev.operation << ev.statusCode
+                   << ev.clientRequestId << ev.message;
+    }
+};
 cppmonetize::MonetizeClient client(cfg);
 
 auto login = client.signIn("user@example.com", "password");
@@ -45,6 +52,9 @@ if (!login.hasValue()) {
     // handle login.error()
 }
 ```
+
+Every request includes a client-generated correlation header (`X-Client-Request-Id` by default).
+Override `ClientConfig::requestIdHeaderName` if your API expects a different header.
 
 ## Token Store Behavior
 

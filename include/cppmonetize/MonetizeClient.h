@@ -7,7 +7,22 @@
 #include <QJsonObject>
 #include <QString>
 
+#include <functional>
+
 namespace cppmonetize {
+
+struct RequestTelemetryEvent {
+    QString operation;
+    QString method;
+    QString url;
+    QString clientRequestId;
+    int statusCode = 0;
+    qint64 durationMs = 0;
+    bool success = false;
+    QString message;
+};
+
+using RequestTelemetryHook = std::function<void(const RequestTelemetryEvent&)>;
 
 struct EndpointConfig {
     QString authLoginPath = QStringLiteral("/auth/login");
@@ -33,6 +48,8 @@ struct ClientConfig {
     int timeoutMs = 15000;
     QString clientId = QStringLiteral("cppmonetize-desktop");
     QString requiredContractPrefix = QStringLiteral("1.");
+    QString requestIdHeaderName = QStringLiteral("X-Client-Request-Id");
+    RequestTelemetryHook telemetryHook;
     EndpointConfig endpoints;
 };
 
