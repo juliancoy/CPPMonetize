@@ -1,0 +1,27 @@
+#pragma once
+
+#include <QString>
+
+namespace cppmonetize {
+
+struct AccessTokenIdentity {
+    QString email;
+    QString userId;
+
+    QString displayIdentity() const
+    {
+        if (!email.trimmed().isEmpty()) {
+            return email.trimmed();
+        }
+        return userId.trimmed();
+    }
+
+    bool hasIdentity() const
+    {
+        return !email.trimmed().isEmpty() || !userId.trimmed().isEmpty();
+    }
+};
+
+AccessTokenIdentity parseAccessTokenIdentity(const QString& accessToken);
+
+}  // namespace cppmonetize
