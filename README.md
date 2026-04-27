@@ -45,7 +45,7 @@ target_link_libraries(your_app PRIVATE CPPMonetize::cppmonetize)
 #include <cppmonetize/MonetizeClient.h>
 
 cppmonetize::ClientConfig cfg;
-cfg.apiBaseUrl = "https://jsynth.us/api";
+cfg.apiBaseUrl = "https://<project-ref>.supabase.co";
 cfg.clientId = "jsynth-desktop";
 cfg.telemetryHook = [](const cppmonetize::RequestTelemetryEvent& ev) {
     if (!ev.success) {
