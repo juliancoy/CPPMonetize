@@ -77,6 +77,7 @@ Result<OAuthConfig> OAuthDesktopFlow::fetchOAuthConfig(const QString& apiBaseUrl
     OAuthConfig cfg;
     cfg.enabled = resp.value().value(QStringLiteral("enabled")).toBool(false);
     cfg.supabaseUrl = resp.value().value(QStringLiteral("supabase_url")).toString().trimmed();
+    cfg.supabaseAnonKey = resp.value().value(QStringLiteral("supabase_anon_key")).toString().trimmed();
     cfg.desktopRedirectBase = resp.value().value(QStringLiteral("desktop_redirect_base")).toString().trimmed();
 
     if (cfg.enabled && (cfg.supabaseUrl.isEmpty() || cfg.desktopRedirectBase.isEmpty())) {
@@ -195,6 +196,119 @@ Result<OAuthCallbackResult> OAuthDesktopFlow::signInWithBrowser(const QString& o
     result.token = token;
     result.email = email;
     return Result<OAuthCallbackResult>::ok(result);
+}
+
+Result<PasswordAuthResult> OAuthDesktopFlow::signInWithPassword(const OAuthConfig& config,
+                                                                const QString& email,
+                                                                const QString& password,
+                                                                bool registerMode,
+                                                                int timeoutMs) const
+{
+    if (!config.enabled || config.supabaseUrl.trimmed().isEmpty()) {
+        return Result<PasswordAuthResult>::fail(makeError(0, QStringLiteral("Supabase auth is not configured")));
+    }
+    if (config.supabaseAnonKey.trimmed().isEmpty()) {
+        return Result<PasswordAuthResult>::fail(makeError(0, QStringLiteral("Supabase anon key is missing")));
+    }
+
+    const QString endpoint = registerMode
+        ? QStringLiteral("/auth/v1/signup")
+        : QStringLiteral("/auth/v1/token?grant_type=password");
+    const QUrl url(config.supabaseUrl + endpoint);
+
+    QNetworkAccessManager network;
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setRawHeader("apikey", config.supabaseAnonKey.toUtf8());
+    request.setRawHeader("Accept", "application/json");
+
+    const QJsonObject payload{
+        {QStringLiteral("email"), email.trimmed()},
+        {QStringLiteral("password"), password},
+    };
+    QNetworkReply* reply = network.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
+        if (reply && reply->isRunning()) {
+            reply->abort();
+        }
+    });
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(timeoutMs);
+    loop.exec();
+
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray raw = reply->readAll();
+    const bool timedOut =
+        (reply->error() == QNetworkReply::OperationCanceledError && timer.isActive() == false);
+    const QJsonDocument doc = QJsonDocument::fromJson(raw);
+    const QJsonObject obj = doc.isObject() ? doc.object() : QJsonObject{};
+
+    const auto firstString = [&](std::initializer_list<const char*> keys) -> QString {
+        for (const char* key : keys) {
+            const QString value = obj.value(QLatin1String(key)).toString().trimmed();
+            if (!value.isEmpty()) {
+                return value;
+            }
+        }
+        return {};
+    };
+
+    if (timedOut) {
+        reply->deleteLater();
+        return Result<PasswordAuthResult>::fail(makeError(0, QStringLiteral("Supabase auth request timed out")));
+    }
+
+    QString token = firstString({"access_token"});
+    if (token.isEmpty()) {
+        token = obj.value(QStringLiteral("session"))
+                    .toObject()
+                    .value(QStringLiteral("access_token"))
+                    .toString()
+                    .trimmed();
+    }
+    QString resolvedEmail = obj.value(QStringLiteral("user"))
+                                .toObject()
+                                .value(QStringLiteral("email"))
+                                .toString()
+                                .trimmed();
+    if (resolvedEmail.isEmpty()) {
+        resolvedEmail = email.trimmed();
+    }
+
+    if (statusCode >= 400 || reply->error() != QNetworkReply::NoError) {
+        QString detail = firstString({"error_description", "msg", "error"});
+        if (detail.isEmpty()) {
+            detail = QString::fromUtf8(raw).trimmed();
+        }
+        if (detail.isEmpty()) {
+            detail = reply->errorString();
+        }
+        const QString errorCode = obj.value(QStringLiteral("error_code")).toString().trimmed();
+        if (errorCode == QStringLiteral("invalid_credentials")) {
+            detail = QStringLiteral("Invalid email or password.");
+        }
+        reply->deleteLater();
+        return Result<PasswordAuthResult>::fail(makeError(statusCode, detail));
+    }
+
+    if (token.isEmpty()) {
+        reply->deleteLater();
+        if (registerMode) {
+            return Result<PasswordAuthResult>::fail(
+                makeError(statusCode, QStringLiteral("Check your email to confirm your account, then sign in.")));
+        }
+        return Result<PasswordAuthResult>::fail(makeError(statusCode, QStringLiteral("Missing access token")));
+    }
+
+    reply->deleteLater();
+    PasswordAuthResult result;
+    result.token = token;
+    result.email = resolvedEmail;
+    return Result<PasswordAuthResult>::ok(result);
 }
 
 }  // namespace cppmonetize

@@ -9,10 +9,16 @@ namespace cppmonetize {
 struct OAuthConfig {
     bool enabled = false;
     QString supabaseUrl;
+    QString supabaseAnonKey;
     QString desktopRedirectBase;
 };
 
 struct OAuthCallbackResult {
+    QString token;
+    QString email;
+};
+
+struct PasswordAuthResult {
     QString token;
     QString email;
 };
@@ -28,6 +34,11 @@ public:
                                  const OAuthConfig& config) const;
     Result<OAuthCallbackResult> signInWithBrowser(const QString& oauthUrl,
                                                   int timeoutMs = 180000) const;
+    Result<PasswordAuthResult> signInWithPassword(const OAuthConfig& config,
+                                                  const QString& email,
+                                                  const QString& password,
+                                                  bool registerMode = false,
+                                                  int timeoutMs = 20000) const;
 };
 
 }  // namespace cppmonetize
