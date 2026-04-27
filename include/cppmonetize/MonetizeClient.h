@@ -23,6 +23,7 @@ struct EndpointConfig {
     QString aiUsagePath = QStringLiteral("/api/ai/request");
 
     QString licensePath = QStringLiteral("/license");
+    QString licenseVerifyPath = QStringLiteral("/license/verify");
     QString checkoutBySlugPathTemplate = QStringLiteral("/api/packs/%1/purchase/stripe");
     QString downloadBySlugPathTemplate = QStringLiteral("/api/patches/%1/download");
 };
@@ -68,6 +69,7 @@ public:
     Result<AiUsageStatus> consumeAiUnits(const QString& accessToken, int units) const;
 
     Result<QJsonObject> getLicense(const QString& accessToken) const;
+    Result<bool> verifyLicenseKey(const QString& licenseKey) const;
 
 private:
     Result<QJsonObject> getJson(const QString& path, const QString& bearerToken = {}) const;

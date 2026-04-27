@@ -324,6 +324,25 @@ Result<QJsonObject> MonetizeClient::getLicense(const QString& accessToken) const
     return getJson(config_.endpoints.licensePath, accessToken);
 }
 
+Result<bool> MonetizeClient::verifyLicenseKey(const QString& licenseKey) const
+{
+    const QString key = licenseKey.trimmed();
+    if (key.isEmpty()) {
+        return Result<bool>::fail(makeError(400, QStringLiteral("license key is required")));
+    }
+
+    QUrl url(normalizeBaseUrl() + normalizePath(config_.endpoints.licenseVerifyPath));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("key"), key);
+    url.setQuery(query);
+
+    const auto resp = performJsonRequest(QStringLiteral("GET"), url, QJsonObject{}, {}, config_.timeoutMs);
+    if (!resp.hasValue()) {
+        return Result<bool>::fail(resp.error());
+    }
+    return Result<bool>::ok(true);
+}
+
 Result<QJsonObject> MonetizeClient::getJson(const QString& path, const QString& bearerToken) const
 {
     const QUrl url(normalizeBaseUrl() + normalizePath(path));
