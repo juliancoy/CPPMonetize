@@ -68,6 +68,35 @@ private slots:
         QVERIFY(!isWithinGraceWindow(1000, 1001, 0));
         QVERIFY(!isWithinGraceWindow(2000, 1000, 1000));
     }
+
+    void deriveCapabilitySet_prefersCapabilitySignals()
+    {
+        AiEntitlements ent;
+        ent.entitled = true;
+        ent.contractVersion = QStringLiteral("1.2.0");
+        ent.requestsPerMinute = 15;
+        ent.projectBudget = 200;
+
+        AiUsageStatus usage;
+        usage.hasSubscription = false;
+        usage.allowAiRequests = false;
+        usage.requiresSubscription = true;
+
+        const CapabilitySet c1 = deriveCapabilitySet(std::optional<AiEntitlements>(ent),
+                                                     std::optional<AiUsageStatus>(usage));
+        QCOMPARE(c1.values.value(QStringLiteral("ai.allow_requests")).toBool(false), true);
+        QCOMPARE(c1.values.value(QStringLiteral("ai.has_subscription")).toBool(true), false);
+        QCOMPARE(c1.values.value(QStringLiteral("ai.requires_subscription")).toBool(false), true);
+        QCOMPARE(c1.values.value(QStringLiteral("ai.requests_per_minute")).toInt(0), 15);
+        QCOMPARE(c1.values.value(QStringLiteral("ai.project_budget")).toInt(0), 200);
+
+        usage.allowAiRequests = true;
+        usage.hasSubscription = true;
+        const CapabilitySet c2 = deriveCapabilitySet(std::optional<AiEntitlements>(ent),
+                                                     std::optional<AiUsageStatus>(usage));
+        QCOMPARE(c2.values.value(QStringLiteral("ai.allow_requests")).toBool(false), true);
+        QCOMPARE(c2.values.value(QStringLiteral("ai.has_subscription")).toBool(false), true);
+    }
 };
 
 QTEST_MAIN(ModelParseTests)

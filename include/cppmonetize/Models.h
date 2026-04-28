@@ -69,11 +69,19 @@ struct AiUsageStatus {
     bool requiresSubscription = false;
 };
 
+struct CapabilitySet {
+    QString schemaVersion;
+    QJsonObject values;
+    QJsonObject extras;
+};
+
 std::optional<AuthSession> parseAuthSession(const QJsonObject& obj, ApiError* errorOut = nullptr);
 std::optional<EntitlementsResponse> parseEntitlementsResponse(const QJsonObject& obj, ApiError* errorOut = nullptr);
 std::optional<AiEntitlements> parseAiEntitlements(const QJsonObject& obj, ApiError* errorOut = nullptr);
 std::optional<CheckoutSession> parseCheckoutSession(const QJsonObject& obj, ApiError* errorOut = nullptr);
 std::optional<DownloadGrant> parseDownloadGrant(const QJsonObject& obj, ApiError* errorOut = nullptr);
 std::optional<AiUsageStatus> parseAiUsageStatus(const QJsonObject& obj, ApiError* errorOut = nullptr);
+CapabilitySet deriveCapabilitySet(const std::optional<AiEntitlements>& entitlements,
+                                  const std::optional<AiUsageStatus>& usage);
 
 }  // namespace cppmonetize

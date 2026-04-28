@@ -2,6 +2,7 @@
 
 #include "cppmonetize/Result.h"
 
+#include <functional>
 #include <QString>
 
 namespace cppmonetize {
@@ -34,9 +35,15 @@ public:
                                  const QString& provider,
                                  quint16 callbackPort,
                                  const OAuthConfig& config) const;
+    QString buildSupabaseAuthorizeUrl(const OAuthConfig& config,
+                                      const QString& provider = QStringLiteral("google"),
+                                      const QString& redirectTo = QStringLiteral("http://127.0.0.1/callback"),
+                                      bool includePkceFlowParams = true) const;
     Result<OAuthCallbackResult> signInWithBrowserPkce(const OAuthConfig& config,
                                                       const QString& provider = QStringLiteral("google"),
-                                                      int timeoutMs = 180000) const;
+                                                      int timeoutMs = 180000,
+                                                      bool openBrowser = true,
+                                                      const std::function<void(const QString&)>& authUrlReady = {}) const;
     Result<OAuthCallbackResult> signInWithBrowser(const QString& oauthUrl,
                                                   int timeoutMs = 180000) const;
     Result<PasswordAuthResult> signInWithPassword(const OAuthConfig& config,

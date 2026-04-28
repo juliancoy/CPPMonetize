@@ -173,4 +173,34 @@ std::optional<AiUsageStatus> parseAiUsageStatus(const QJsonObject& obj, ApiError
     return s;
 }
 
+CapabilitySet deriveCapabilitySet(const std::optional<AiEntitlements>& entitlements,
+                                  const std::optional<AiUsageStatus>& usage)
+{
+    CapabilitySet c;
+    if (entitlements.has_value()) {
+        const AiEntitlements& e = entitlements.value();
+        c.values.insert(QStringLiteral("ai.allow_requests"), e.entitled);
+        c.values.insert(QStringLiteral("ai.requests_per_minute"), e.requestsPerMinute);
+        c.values.insert(QStringLiteral("ai.project_budget"), e.projectBudget);
+        c.values.insert(QStringLiteral("ai.timeout_ms"), e.timeoutMs);
+        c.values.insert(QStringLiteral("ai.retries"), e.retries);
+        c.values.insert(QStringLiteral("ai.contract_version"), e.contractVersion);
+        c.values.insert(QStringLiteral("ai.models"), QJsonArray::fromStringList(e.models));
+        c.values.insert(QStringLiteral("ai.fallback_order"), QJsonArray::fromStringList(e.fallbackOrder));
+        c.schemaVersion = e.contractVersion;
+    }
+    if (usage.has_value()) {
+        const AiUsageStatus& u = usage.value();
+        c.values.insert(QStringLiteral("ai.has_subscription"), u.hasSubscription);
+        c.values.insert(QStringLiteral("ai.requires_subscription"), u.requiresSubscription);
+        const bool allowFromEnt = c.values.value(QStringLiteral("ai.allow_requests")).toBool(false);
+        c.values.insert(QStringLiteral("ai.allow_requests"), allowFromEnt || u.allowAiRequests);
+        c.values.insert(QStringLiteral("ai.usage_month"), u.usageMonth);
+        c.values.insert(QStringLiteral("ai.free_limit"), u.freeLimit);
+        c.values.insert(QStringLiteral("ai.free_used"), u.freeUsed);
+        c.values.insert(QStringLiteral("ai.free_remaining"), u.freeRemaining);
+    }
+    return c;
+}
+
 }  // namespace cppmonetize

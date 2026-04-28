@@ -13,6 +13,7 @@ add_library(cppmonetize STATIC
     src/MonetizeClient.cpp
     src/OAuthDesktopFlow.cpp
     src/AuthIdentity.cpp
+    src/ApiErrorUtils.cpp
     src/TokenStore.cpp
 )
 

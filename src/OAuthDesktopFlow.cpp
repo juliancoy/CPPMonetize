@@ -173,6 +173,72 @@ QString readSupabaseAnonKeyFromEnv()
     return key;
 }
 
+QString readSupabaseUrlFromEnv()
+{
+    QString value = qEnvironmentVariable("SUPABASE_URL").trimmed();
+    if (value.isEmpty()) {
+        value = qEnvironmentVariable("SB_URL").trimmed();
+    }
+    if (!value.isEmpty()) {
+        return value;
+    }
+
+    auto parseEnvFile = [](const QString& path) -> QString {
+        QFile file(path);
+        if (!file.exists() || !file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return {};
+        }
+        QTextStream stream(&file);
+        while (!stream.atEnd()) {
+            QString line = stream.readLine().trimmed();
+            if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) {
+                continue;
+            }
+            if (line.startsWith(QStringLiteral("export "))) {
+                line = line.mid(7).trimmed();
+            }
+            const int eq = line.indexOf(QLatin1Char('='));
+            if (eq <= 0) {
+                continue;
+            }
+            const QString name = line.left(eq).trimmed();
+            QString envValue = line.mid(eq + 1).trimmed();
+            if (name != QStringLiteral("SUPABASE_URL") &&
+                name != QStringLiteral("SB_URL")) {
+                continue;
+            }
+            if ((envValue.startsWith(QLatin1Char('"')) && envValue.endsWith(QLatin1Char('"'))) ||
+                (envValue.startsWith(QLatin1Char('\'')) && envValue.endsWith(QLatin1Char('\'')))) {
+                envValue = envValue.mid(1, envValue.size() - 2);
+            }
+            return envValue.trimmed();
+        }
+        return {};
+    };
+
+    QStringList candidates;
+    const QString cwd = QDir::currentPath();
+    const QString appDir = QCoreApplication::applicationDirPath();
+    if (!cwd.isEmpty()) {
+        candidates.push_back(QDir(cwd).filePath(QStringLiteral(".env.supabase")));
+        candidates.push_back(QDir(cwd).filePath(QStringLiteral("../.env.supabase")));
+        candidates.push_back(QDir(cwd).filePath(QStringLiteral("../../.env.supabase")));
+    }
+    if (!appDir.isEmpty()) {
+        candidates.push_back(QDir(appDir).filePath(QStringLiteral(".env.supabase")));
+        candidates.push_back(QDir(appDir).filePath(QStringLiteral("../.env.supabase")));
+        candidates.push_back(QDir(appDir).filePath(QStringLiteral("../../.env.supabase")));
+    }
+    candidates.removeDuplicates();
+    for (const QString& candidate : candidates) {
+        const QString resolved = parseEnvFile(QFileInfo(candidate).absoluteFilePath());
+        if (!resolved.isEmpty()) {
+            return resolved;
+        }
+    }
+    return {};
+}
+
 QString randomPkceToken(int byteCount)
 {
     QByteArray data;
@@ -297,13 +363,23 @@ Result<OAuthConfig> OAuthDesktopFlow::resolveSupabaseConfig(const QString& apiBa
     if (normalizedBase.isEmpty()) {
         normalizedBase = normalizeBaseUrl(readBuiltInSupabaseUrl());
     }
+    if (!isSupabaseOrigin(normalizedBase)) {
+        const QString envSupabaseUrl = normalizeBaseUrl(readSupabaseUrlFromEnv());
+        if (isSupabaseOrigin(envSupabaseUrl)) {
+            normalizedBase = envSupabaseUrl;
+        } else if (normalizedBase.isEmpty()) {
+            normalizedBase = normalizeBaseUrl(readBuiltInSupabaseUrl());
+        }
+    }
     if (normalizedBase.isEmpty()) {
         return Result<OAuthConfig>::fail(makeError(0, QStringLiteral("OAuth config base URL is empty")));
     }
 
     if (!isSupabaseOrigin(normalizedBase)) {
         return Result<OAuthConfig>::fail(
-            makeError(0, QStringLiteral("Only Supabase origin URLs are supported for OAuth login.")));
+            makeError(0,
+                      QStringLiteral("Only Supabase origin URLs are supported for OAuth login. "
+                                     "Set SUPABASE_URL (or SB_URL) to your Supabase project URL.")));
     }
 
     QString supabaseBase = normalizedBase;
@@ -367,9 +443,39 @@ QString OAuthDesktopFlow::buildBrowserOAuthUrl(const QString& apiBaseUrl,
            QStringLiteral("?redirect=http://localhost:%1/callback").arg(callbackPort);
 }
 
+QString OAuthDesktopFlow::buildSupabaseAuthorizeUrl(const OAuthConfig& config,
+                                                    const QString& provider,
+                                                    const QString& redirectTo,
+                                                    bool includePkceFlowParams) const
+{
+    const QString supabaseUrl = normalizeBaseUrl(config.supabaseUrl);
+    if (supabaseUrl.isEmpty()) {
+        return QString();
+    }
+    const QString resolvedProvider = provider.trimmed().isEmpty()
+        ? QStringLiteral("google")
+        : provider.trimmed().toLower();
+    const QString resolvedRedirect = redirectTo.trimmed().isEmpty()
+        ? QStringLiteral("http://127.0.0.1/callback")
+        : redirectTo.trimmed();
+
+    QUrl authUrl(supabaseUrl + QStringLiteral("/auth/v1/authorize"));
+    QUrlQuery authQuery;
+    authQuery.addQueryItem(QStringLiteral("provider"), resolvedProvider);
+    authQuery.addQueryItem(QStringLiteral("redirect_to"), resolvedRedirect);
+    if (includePkceFlowParams) {
+        authQuery.addQueryItem(QStringLiteral("flow_type"), QStringLiteral("pkce"));
+        authQuery.addQueryItem(QStringLiteral("response_type"), QStringLiteral("code"));
+    }
+    authUrl.setQuery(authQuery);
+    return authUrl.toString();
+}
+
 Result<OAuthCallbackResult> OAuthDesktopFlow::signInWithBrowserPkce(const OAuthConfig& config,
                                                                     const QString& provider,
-                                                                    int timeoutMs) const
+                                                                    int timeoutMs,
+                                                                    bool openBrowser,
+                                                                    const std::function<void(const QString&)>& authUrlReady) const
 {
     if (!config.enabled || config.supabaseUrl.trimmed().isEmpty()) {
         return Result<OAuthCallbackResult>::fail(makeError(0, QStringLiteral("Supabase auth is not configured")));
@@ -400,8 +506,12 @@ Result<OAuthCallbackResult> OAuthDesktopFlow::signInWithBrowserPkce(const OAuthC
     authQuery.addQueryItem(QStringLiteral("response_type"), QStringLiteral("code"));
     authUrl.setQuery(authQuery);
 
-    if (!QDesktopServices::openUrl(authUrl)) {
-        return Result<OAuthCallbackResult>::fail(makeError(0, QStringLiteral("Unable to open browser URL"), authUrl.toString()));
+    if (authUrlReady) {
+        authUrlReady(authUrl.toString());
+    }
+    if (openBrowser && !QDesktopServices::openUrl(authUrl)) {
+        return Result<OAuthCallbackResult>::fail(
+            makeError(0, QStringLiteral("Unable to open browser URL"), authUrl.toString()));
     }
 
     QString token;

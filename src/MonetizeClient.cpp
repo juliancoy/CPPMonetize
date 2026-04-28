@@ -2,6 +2,7 @@
 
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -29,6 +30,11 @@ QString normalizePath(const QString& path)
         return path;
     }
     return QStringLiteral("/") + path;
+}
+
+bool isSupabaseOriginBase(const QString& baseUrl)
+{
+    return baseUrl.contains(QStringLiteral(".supabase.co"), Qt::CaseInsensitive);
 }
 
 QString parseErrorMessage(const QJsonObject& obj)
@@ -246,27 +252,119 @@ Result<AuthSession> MonetizeClient::exchangeDesktopCode(const QString& code,
 Result<AiEntitlements> MonetizeClient::getAiEntitlements(const QString& accessToken) const
 {
     const auto resp = getJson(config_.endpoints.aiEntitlementsPath, accessToken);
-    if (!resp.hasValue()) {
-        return Result<AiEntitlements>::fail(resp.error());
+    if (resp.hasValue()) {
+        ApiError parseError;
+        auto parsed = parseAiEntitlements(resp.value(), &parseError);
+        if (parsed) {
+            if (!config_.requiredContractPrefix.isEmpty() &&
+                !parsed->contractVersion.startsWith(config_.requiredContractPrefix)) {
+                return Result<AiEntitlements>::fail(
+                    makeError(0,
+                              QStringLiteral("Unsupported contract version: %1").arg(parsed->contractVersion),
+                              QStringLiteral("required prefix: %1").arg(config_.requiredContractPrefix)));
+            }
+            return Result<AiEntitlements>::ok(*parsed);
+        }
     }
 
-    ApiError parseError;
-    auto parsed = parseAiEntitlements(resp.value(), &parseError);
-    if (!parsed) {
-        return Result<AiEntitlements>::fail(parseError);
+    if (!isSupabaseOriginBase(normalizeBaseUrl())) {
+        if (!resp.hasValue()) {
+            return Result<AiEntitlements>::fail(resp.error());
+        }
+        return Result<AiEntitlements>::fail(
+            makeError(0, QStringLiteral("Failed to parse AI entitlements response.")));
     }
+
+    // Supabase direct fallback: derive entitlement state from ai_request status function.
+    const auto aiUsageResp = getJson(QStringLiteral("/functions/v1/ai_request"), accessToken);
+    if (!aiUsageResp.hasValue()) {
+        return Result<AiEntitlements>::fail(aiUsageResp.error());
+    }
+
+    const QJsonObject obj = aiUsageResp.value();
+    AiEntitlements ent;
+    ent.entitled = obj.value(QStringLiteral("allow_ai_requests")).toBool(false);
+    ent.contractVersion = QStringLiteral("1.supabase");
+    ent.userId = obj.value(QStringLiteral("user_id")).toString().trimmed();
+    ent.models = QStringList{QStringLiteral("deepseek-chat")};
+    ent.fallbackOrder = ent.models;
+    ent.requestsPerMinute = 12;
+    ent.projectBudget = 200;
+    ent.timeoutMs = qMax(1000, config_.timeoutMs);
+    ent.retries = 1;
+
     if (!config_.requiredContractPrefix.isEmpty() &&
-        !parsed->contractVersion.startsWith(config_.requiredContractPrefix)) {
+        !ent.contractVersion.startsWith(config_.requiredContractPrefix)) {
         return Result<AiEntitlements>::fail(
             makeError(0,
-                      QStringLiteral("Unsupported contract version: %1").arg(parsed->contractVersion),
+                      QStringLiteral("Unsupported contract version: %1").arg(ent.contractVersion),
                       QStringLiteral("required prefix: %1").arg(config_.requiredContractPrefix)));
     }
-    return Result<AiEntitlements>::ok(*parsed);
+
+    return Result<AiEntitlements>::ok(ent);
 }
 
 Result<QJsonObject> MonetizeClient::submitAiTask(const QString& accessToken, const QJsonObject& body) const
 {
+    if (isSupabaseOriginBase(normalizeBaseUrl())) {
+        const QString model = body.value(QStringLiteral("model")).toString().trimmed().isEmpty()
+            ? QStringLiteral("deepseek-chat")
+            : body.value(QStringLiteral("model")).toString().trimmed();
+        const QString action = body.value(QStringLiteral("action")).toString().trimmed();
+        const QJsonObject payload = body.value(QStringLiteral("payload")).toObject();
+
+        const QString instructions = payload.value(QStringLiteral("instructions")).toString().trimmed().isEmpty()
+            ? QStringLiteral("You are an assistant for desktop editing workflows. Be concise and return JSON when requested.")
+            : payload.value(QStringLiteral("instructions")).toString().trimmed();
+        const QString transcriptText = payload.value(QStringLiteral("transcript_text")).toString();
+        QString userPrompt;
+        if (!transcriptText.trimmed().isEmpty()) {
+            userPrompt = QStringLiteral("Action: %1\n\nTranscript:\n%2").arg(action, transcriptText);
+        } else {
+            userPrompt = QStringLiteral("Action: %1\n\nPayload:\n%2")
+                             .arg(action,
+                                  QString::fromUtf8(
+                                      QJsonDocument(payload).toJson(QJsonDocument::Indented)));
+        }
+
+        QJsonArray messages;
+        messages.push_back(QJsonObject{
+            {QStringLiteral("role"), QStringLiteral("system")},
+            {QStringLiteral("content"), instructions},
+        });
+        messages.push_back(QJsonObject{
+            {QStringLiteral("role"), QStringLiteral("user")},
+            {QStringLiteral("content"), userPrompt},
+        });
+
+        QJsonObject deepseekReq{
+            {QStringLiteral("model"), model},
+            {QStringLiteral("messages"), messages},
+            {QStringLiteral("temperature"), 0.2},
+        };
+        const auto deepseekResp =
+            postJson(QStringLiteral("/functions/v1/deepseek_chat"), deepseekReq, accessToken);
+        if (!deepseekResp.hasValue()) {
+            return Result<QJsonObject>::fail(deepseekResp.error());
+        }
+
+        const QJsonObject outer = deepseekResp.value();
+        const QJsonObject upstream = outer.value(QStringLiteral("response")).toObject();
+        const QJsonArray choices = upstream.value(QStringLiteral("choices")).toArray();
+        QString content;
+        if (!choices.isEmpty()) {
+            content = choices.first().toObject().value(QStringLiteral("message")).toObject().value(QStringLiteral("content")).toString();
+        }
+
+        QJsonObject normalized;
+        normalized.insert(QStringLiteral("provider"), QStringLiteral("deepseek"));
+        normalized.insert(QStringLiteral("message"), content);
+        normalized.insert(QStringLiteral("text"), content);
+        normalized.insert(QStringLiteral("response"), upstream);
+        normalized.insert(QStringLiteral("raw"), outer);
+        return Result<QJsonObject>::ok(normalized);
+    }
+
     return postJson(config_.endpoints.aiTaskPath, body, accessToken);
 }
 

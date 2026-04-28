@@ -74,17 +74,22 @@ private slots:
         QVERIFY(result.error().message.contains(QStringLiteral("not configured"), Qt::CaseInsensitive));
     }
 
-    void resolveSupabaseConfig_rejectsNonSupabaseOrigin()
+    void resolveSupabaseConfig_usesSupabaseUrlFallbackForNonSupabaseOrigin()
     {
+        ScopedEnvVar supabaseUrl("SUPABASE_URL");
+        ScopedEnvVar sbUrl("SB_URL");
         ScopedEnvVar supabaseAnonKey("SUPABASE_ANON_KEY");
+        qputenv("SUPABASE_URL", QByteArray("https://unit-test-project.supabase.co"));
+        qunsetenv("SB_URL");
         qputenv("SUPABASE_ANON_KEY", QByteArray("unit-test-anon-key"));
 
         OAuthDesktopFlow flow;
         const auto result = flow.resolveSupabaseConfig(QStringLiteral("https://jsynth.us/api"), 50);
 
-        QVERIFY(!result.hasValue());
-        QVERIFY(result.error().message.contains(QStringLiteral("Only Supabase origin URLs are supported"),
-                                                Qt::CaseInsensitive));
+        QVERIFY(result.hasValue());
+        QCOMPARE(result.value().enabled, true);
+        QCOMPARE(result.value().supabaseUrl, QStringLiteral("https://unit-test-project.supabase.co"));
+        QCOMPARE(result.value().supabaseAnonKey, QStringLiteral("unit-test-anon-key"));
     }
 };
 

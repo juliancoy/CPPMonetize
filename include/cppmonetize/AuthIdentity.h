@@ -22,6 +22,11 @@ struct AccessTokenIdentity {
     }
 };
 
+enum class EmailVerificationState { Verified, Unverified, Unknown };
+
 AccessTokenIdentity parseAccessTokenIdentity(const QString& accessToken);
+EmailVerificationState emailVerificationStateFromAccessToken(const QString& accessToken);
+QString emailFromAccessToken(const QString& accessToken);
+QString profileImageUrlFromAccessToken(const QString& accessToken);
 
 }  // namespace cppmonetize
