@@ -312,12 +312,20 @@ Result<OAuthCallbackResult> exchangeSupabasePkceCode(const OAuthConfig& config,
     }
 
     QString token = obj.value(QStringLiteral("access_token")).toString().trimmed();
+    QString refreshToken = obj.value(QStringLiteral("refresh_token")).toString().trimmed();
     if (token.isEmpty()) {
         token = obj.value(QStringLiteral("session"))
                     .toObject()
                     .value(QStringLiteral("access_token"))
                     .toString()
                     .trimmed();
+    }
+    if (refreshToken.isEmpty()) {
+        refreshToken = obj.value(QStringLiteral("session"))
+                           .toObject()
+                           .value(QStringLiteral("refresh_token"))
+                           .toString()
+                           .trimmed();
     }
     QString resolvedEmail = obj.value(QStringLiteral("user"))
                                 .toObject()
@@ -349,6 +357,7 @@ Result<OAuthCallbackResult> exchangeSupabasePkceCode(const OAuthConfig& config,
     reply->deleteLater();
     OAuthCallbackResult result;
     result.token = token;
+    result.refreshToken = refreshToken;
     result.email = resolvedEmail;
     return Result<OAuthCallbackResult>::ok(result);
 }
@@ -791,12 +800,20 @@ Result<PasswordAuthResult> OAuthDesktopFlow::signInWithPassword(const OAuthConfi
     }
 
     QString token = firstString({"access_token"});
+    QString refreshToken = firstString({"refresh_token"});
     if (token.isEmpty()) {
         token = obj.value(QStringLiteral("session"))
                     .toObject()
                     .value(QStringLiteral("access_token"))
                     .toString()
                     .trimmed();
+    }
+    if (refreshToken.isEmpty()) {
+        refreshToken = obj.value(QStringLiteral("session"))
+                           .toObject()
+                           .value(QStringLiteral("refresh_token"))
+                           .toString()
+                           .trimmed();
     }
     QString resolvedEmail = obj.value(QStringLiteral("user"))
                                 .toObject()
@@ -835,8 +852,107 @@ Result<PasswordAuthResult> OAuthDesktopFlow::signInWithPassword(const OAuthConfi
     reply->deleteLater();
     PasswordAuthResult result;
     result.token = token;
+    result.refreshToken = refreshToken;
     result.email = resolvedEmail;
     return Result<PasswordAuthResult>::ok(result);
+}
+
+Result<OAuthCallbackResult> OAuthDesktopFlow::refreshWithToken(const OAuthConfig& config,
+                                                               const QString& refreshToken,
+                                                               int timeoutMs) const
+{
+    if (!config.enabled || config.supabaseUrl.trimmed().isEmpty()) {
+        return Result<OAuthCallbackResult>::fail(makeError(0, QStringLiteral("Supabase auth is not configured")));
+    }
+    if (config.supabaseAnonKey.trimmed().isEmpty()) {
+        return Result<OAuthCallbackResult>::fail(makeError(0, QStringLiteral("Supabase anon key is missing")));
+    }
+    if (refreshToken.trimmed().isEmpty()) {
+        return Result<OAuthCallbackResult>::fail(makeError(0, QStringLiteral("Refresh token is missing")));
+    }
+
+    const QUrl url(config.supabaseUrl + QStringLiteral("/auth/v1/token?grant_type=refresh_token"));
+    QNetworkAccessManager network;
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setRawHeader("apikey", config.supabaseAnonKey.toUtf8());
+    request.setRawHeader("Accept", "application/json");
+
+    const QJsonObject payload{
+        {QStringLiteral("refresh_token"), refreshToken.trimmed()},
+    };
+    QNetworkReply* reply = network.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
+        if (reply && reply->isRunning()) {
+            reply->abort();
+        }
+    });
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    timer.start(timeoutMs);
+    loop.exec();
+
+    const int statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray raw = reply->readAll();
+    const bool timedOut =
+        (reply->error() == QNetworkReply::OperationCanceledError && timer.isActive() == false);
+    const QJsonDocument doc = QJsonDocument::fromJson(raw);
+    const QJsonObject obj = doc.isObject() ? doc.object() : QJsonObject{};
+
+    if (timedOut) {
+        reply->deleteLater();
+        return Result<OAuthCallbackResult>::fail(makeError(0, QStringLiteral("Supabase token refresh timed out")));
+    }
+
+    QString accessToken = obj.value(QStringLiteral("access_token")).toString().trimmed();
+    QString refreshedToken = obj.value(QStringLiteral("refresh_token")).toString().trimmed();
+    if (accessToken.isEmpty()) {
+        accessToken = obj.value(QStringLiteral("session"))
+                          .toObject()
+                          .value(QStringLiteral("access_token"))
+                          .toString()
+                          .trimmed();
+    }
+    if (refreshedToken.isEmpty()) {
+        refreshedToken = obj.value(QStringLiteral("session"))
+                             .toObject()
+                             .value(QStringLiteral("refresh_token"))
+                             .toString()
+                             .trimmed();
+    }
+    const QString email = obj.value(QStringLiteral("user"))
+                              .toObject()
+                              .value(QStringLiteral("email"))
+                              .toString()
+                              .trimmed();
+
+    if (statusCode >= 400 || reply->error() != QNetworkReply::NoError || accessToken.isEmpty()) {
+        QString detail = obj.value(QStringLiteral("error_description")).toString().trimmed();
+        if (detail.isEmpty()) {
+            detail = obj.value(QStringLiteral("msg")).toString().trimmed();
+        }
+        if (detail.isEmpty()) {
+            detail = obj.value(QStringLiteral("error")).toString().trimmed();
+        }
+        if (detail.isEmpty()) {
+            detail = QString::fromUtf8(raw).trimmed();
+        }
+        if (detail.isEmpty()) {
+            detail = reply->errorString();
+        }
+        reply->deleteLater();
+        return Result<OAuthCallbackResult>::fail(makeError(statusCode, detail.isEmpty() ? QStringLiteral("Failed to refresh OAuth token.") : detail));
+    }
+
+    reply->deleteLater();
+    OAuthCallbackResult result;
+    result.token = accessToken;
+    result.refreshToken = refreshedToken.isEmpty() ? refreshToken.trimmed() : refreshedToken;
+    result.email = email;
+    return Result<OAuthCallbackResult>::ok(result);
 }
 
 }  // namespace cppmonetize

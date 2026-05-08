@@ -27,8 +27,18 @@ public:
 
     Result<bool> storeToken(const QString& token, const QString& userId) override
     {
-        if (!writeLine(tokenPath(), token)) {
+        return storeSession(token, QString(), userId);
+    }
+
+    Result<bool> storeSession(const QString& accessToken,
+                              const QString& refreshToken,
+                              const QString& userId) override
+    {
+        if (!writeLine(tokenPath(), accessToken)) {
             return Result<bool>::fail(makeError(0, QStringLiteral("Failed to write token file"), tokenPath()));
+        }
+        if (!writeLine(refreshPath(), refreshToken)) {
+            return Result<bool>::fail(makeError(0, QStringLiteral("Failed to write refresh token file"), refreshPath()));
         }
         if (!writeLine(userPath(), userId)) {
             return Result<bool>::fail(makeError(0, QStringLiteral("Failed to write user file"), userPath()));
@@ -41,6 +51,11 @@ public:
         return Result<QString>::ok(readLine(tokenPath()));
     }
 
+    Result<QString> loadRefreshToken() override
+    {
+        return Result<QString>::ok(readLine(refreshPath()));
+    }
+
     Result<QString> loadUserId() override
     {
         return Result<QString>::ok(readLine(userPath()));
@@ -49,6 +64,7 @@ public:
     Result<bool> clear() override
     {
         QFile::remove(tokenPath());
+        QFile::remove(refreshPath());
         QFile::remove(userPath());
         return Result<bool>::ok(true);
     }
@@ -73,6 +89,11 @@ private:
     QString userPath() const
     {
         return basePath() + QStringLiteral("/auth_user_id.txt");
+    }
+
+    QString refreshPath() const
+    {
+        return basePath() + QStringLiteral("/auth_refresh_token.txt");
     }
 
     static bool writeLine(const QString& path, const QString& value)
@@ -117,9 +138,20 @@ public:
 
     Result<bool> storeToken(const QString& token, const QString& userId) override
     {
-        const auto tokenRes = writeSecret(QStringLiteral("token"), token);
+        return storeSession(token, QString(), userId);
+    }
+
+    Result<bool> storeSession(const QString& accessToken,
+                              const QString& refreshToken,
+                              const QString& userId) override
+    {
+        const auto tokenRes = writeSecret(QStringLiteral("token"), accessToken);
         if (!tokenRes.hasValue()) {
             return tokenRes;
+        }
+        const auto refreshRes = writeSecret(QStringLiteral("refresh_token"), refreshToken);
+        if (!refreshRes.hasValue()) {
+            return refreshRes;
         }
         const auto userRes = writeSecret(QStringLiteral("user_id"), userId);
         if (!userRes.hasValue()) {
@@ -133,6 +165,11 @@ public:
         return readSecret(QStringLiteral("token"));
     }
 
+    Result<QString> loadRefreshToken() override
+    {
+        return readSecret(QStringLiteral("refresh_token"));
+    }
+
     Result<QString> loadUserId() override
     {
         return readSecret(QStringLiteral("user_id"));
@@ -143,6 +180,10 @@ public:
         const auto t = clearSecret(QStringLiteral("token"));
         if (!t.hasValue()) {
             return t;
+        }
+        const auto r = clearSecret(QStringLiteral("refresh_token"));
+        if (!r.hasValue()) {
+            return r;
         }
         const auto u = clearSecret(QStringLiteral("user_id"));
         if (!u.hasValue()) {

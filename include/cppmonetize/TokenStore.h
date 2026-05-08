@@ -14,7 +14,11 @@ public:
     virtual ~TokenStore() = default;
 
     virtual Result<bool> storeToken(const QString& token, const QString& userId) = 0;
+    virtual Result<bool> storeSession(const QString& accessToken,
+                                      const QString& refreshToken,
+                                      const QString& userId) = 0;
     virtual Result<QString> loadToken() = 0;
+    virtual Result<QString> loadRefreshToken() = 0;
     virtual Result<QString> loadUserId() = 0;
     virtual Result<bool> clear() = 0;
 };

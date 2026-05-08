@@ -16,11 +16,13 @@ struct OAuthConfig {
 
 struct OAuthCallbackResult {
     QString token;
+    QString refreshToken;
     QString email;
 };
 
 struct PasswordAuthResult {
     QString token;
+    QString refreshToken;
     QString email;
 };
 
@@ -51,6 +53,9 @@ public:
                                                   const QString& password,
                                                   bool registerMode = false,
                                                   int timeoutMs = 20000) const;
+    Result<OAuthCallbackResult> refreshWithToken(const OAuthConfig& config,
+                                                 const QString& refreshToken,
+                                                 int timeoutMs = 20000) const;
 };
 
 }  // namespace cppmonetize
