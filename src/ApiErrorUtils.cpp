@@ -48,9 +48,9 @@ bool isBackendSchemaMisconfigured(const ApiError& error)
     return combined.contains(QStringLiteral("schema cache")) ||
            combined.contains(QStringLiteral("could not find the table")) ||
            combined.contains(QStringLiteral("could not find the function")) ||
-           combined.contains(QStringLiteral("relation")) && combined.contains(QStringLiteral("does not exist")) ||
+           (combined.contains(QStringLiteral("relation")) &&
+            combined.contains(QStringLiteral("does not exist"))) ||
            combined.contains(QStringLiteral("undefined function"));
 }
 
 }  // namespace cppmonetize
-
